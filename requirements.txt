@@ -1,0 +1,8 @@
+msal==1.28.0
+gspread==6.1.2
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+openai==1.51.0
+python-dotenv==1.0.1
+requests==2.32.3
+oauth2client==4.1.3
