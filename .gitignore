@@ -35,3 +35,43 @@ pip-delete-this-directory.txt
 Thumbs.db
 export_project.py
 FULL_PROJECT_CODE.txt
+
+---
+
+# ✅ UPDATED `.gitignore` (STRONGLY RECOMMENDED)
+
+Create / update `.gitignore` with this **exact** content:
+
+```gitignore
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.venv/
+
+# Secrets & Tokens
+token_cache.json
+token_cache.bin
+credentials.json
+*.key
+*.pem
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs & exports
+*.log
+*.csv
+*.xlsx
+FULL_PROJECT_CODE.txt
+
+# Local state
+.cache/
+
+rris_detailed_project_report_dpr.md
