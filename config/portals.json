@@ -1,0 +1,16 @@
+{
+  "turing": {
+    "url": "https://www.turing.com/login",
+    "user_field": "input[name='email']",
+    "pass_field": "input[name='password']",
+    "submit_button": "button[type='submit']",
+    "status_selector": ".application-status-tag"
+  },
+  "greenhouse": {
+    "url": "https://app.greenhouse.io/users/sign_in",
+    "user_field": "#user_email",
+    "pass_field": "#user_password",
+    "submit_button": "input[type='submit']",
+    "status_selector": ".job-status"
+  }
+}

@@ -1,53 +1,122 @@
-# email_engine/processor.py
-import requests
+import os
 import json
+import requests
+import time
+from groq import Groq
+from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 
-def analyze_job_email_llm(subject, body_data, sender):
-    """Uses Local Ollama with full-body context and HTML cleaning."""
+load_dotenv()
+
+# --- Configuration ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3.2:3b"
+PRIMARY_GROQ_MODEL = "llama-3.1-8b-instant" 
+
+client = Groq(api_key=GROQ_API_KEY)
+
+def clean_html(html):
+    if html is None: return ""
+    markup = str(html)
+    try:
+        soup = BeautifulSoup(markup, "html.parser")
+        for script_or_style in soup(["script", "style", "meta", "link"]):
+            script_or_style.decompose()
+        return soup.get_text(separator=' ', strip=True)[:5000]
+    except Exception as e:
+        print(f"⚠️ Cleaning Error: {e}")
+        return markup[:5000]
+
+def analyze_with_groq(prompt):
+    if not GROQ_API_KEY: return None
+    try:
+        completion = client.chat.completions.create(
+            model=PRIMARY_GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        if "429" in str(e):
+            print("⏳ Groq Rate Limit Hit (429).")
+        else:
+            print(f"⚠️ Groq Error: {e}")
+        return None
+
+def analyze_with_ollama(prompt):
+    print("🔄 Fallback: Processing with local Ollama...")
+    payload = {
+        "model": OLLAMA_MODEL, 
+        "prompt": prompt + "\nReturn JSON ONLY. If multiple items found, return a list containing one object.", 
+        "stream": False, 
+        "format": "json"
+    }
+    try:
+        response = requests.post(OLLAMA_URL, json=payload, timeout=60)
+        return response.json().get("response")
+    except Exception as e:
+        print(f"❌ Ollama Error: {e}")
+        return None
+
+def analyze_job_email_llm(subject, email_body, sender):
+    """
+    Polished Orchestration: Handles list returns and rate-limit fallbacks.
+    """
+    clean_text = clean_html(email_body)
     
-    # FIX: Handle cases where body_data is a string OR a dictionary
-    if isinstance(body_data, dict):
-        html_content = body_data.get('content', '')
-    else:
-        html_content = str(body_data)
-
-    # Clean HTML to plain text
-    soup = BeautifulSoup(html_content, 'html.parser')
-    plain_text = soup.get_text(separator=' ', strip=True)
-
-    url = "http://localhost:11434/api/generate"
-    
-    # email_engine/processor.py
-# ... (BeautifulSoup logic remains the same) ...
-
     prompt = f"""
-    You are a professional Job Tracker. Your goal is to find the ACTUAL HIRING COMPANY.
-    
-    CRITICAL RULES:
-    1. COMPANY: If the email is from LinkedIn/Naukri/Indeed, IGNORE them. Look deep in the text for the employer (e.g., CoinDCX, RGG Capital, Alpha Access). 
-    2. REJECTION: If you see "Unfortunately", "will not be moving forward", or "decided to move on", Status is "Rejected".
-    3. ROLE: If the role is missing, use "Quantitative Analyst".
+    System: Act as a Career Intelligence Architect. Extract job data.
+    Return ONLY a JSON object (not a list) with these keys: 
+    "company", "role", "status", "reasoning", "is_interview".
 
+    Sender: {sender}
     Subject: {subject}
-    Email Body: {plain_text[:2500]} 
+    Body: {clean_text}
 
-    Return ONLY JSON:
-    {{"company": "REAL_EMPLOYER_NAME", "role": "TITLE", "status": "Applied/Interview/Rejected"}}
+    Valid Statuses: Applied, Viewed, Interview, Rejected, Noise.
     """
 
-    
-    payload = {
-        "model": "llama3.2:3b",
-        "prompt": prompt,
-        "stream": False,
-        "format": "json" 
-    }
-    
-    try:
-        response = requests.post(url, json=payload, timeout=90)
-        response.raise_for_status()
-        return json.loads(response.json()['response'])
-    except Exception as e:
-        print(f"⚠️ Local AI Error: {e}")
-        return {"company": "Unknown", "role": "Position", "status": "Applied"}
+    # 1. Attempt Groq, then Fallback to Ollama
+    raw_result = analyze_with_groq(prompt)
+    if not raw_result:
+        raw_result = analyze_with_ollama(prompt)
+
+    if raw_result:
+        try:
+            # 2. Extract and Parse JSON
+            clean_json = raw_result.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json)
+            
+            # --- THE LIST FIX ---
+            if isinstance(data, list):
+                data = data[0] if len(data) > 0 else {}
+
+            # --- ROBUST FLATTENING ---
+            def flatten(value):
+                if isinstance(value, list):
+                    return ", ".join(map(str, value))
+                return str(value) if value is not None else ""
+
+            company = flatten(data.get("company", "Unknown"))
+            role = flatten(data.get("role", "Not specified"))
+            status = flatten(data.get("status", "Noise"))
+            reasoning = flatten(data.get("reasoning", "Processed"))
+            is_int = data.get("is_interview", False)
+
+            # 3. Dynamic Interview Logic
+            if is_int is True or "interview" in status.lower():
+                status = "Interview"
+                if "🔥 PREP" not in reasoning:
+                    reasoning = f"🔥 PREP: {reasoning}"
+
+            return {
+                "company": company,
+                "role": role,
+                "status": status,
+                "reasoning": reasoning
+            }
+        except Exception as e:
+            print(f"⚠️ JSON Parse Error: {e} | Content: {raw_result[:50]}...")
+
+    return {"company": "Unknown", "role": "Unknown", "status": "Noise", "reasoning": "Extraction Failed"}

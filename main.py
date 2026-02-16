@@ -1,4 +1,6 @@
-# main.py
+import sys
+import time
+from tqdm import tqdm
 from auth.outlook_auth import get_token
 from email_engine.fetch_emails import fetch_emails
 from email_engine.processor import analyze_job_email_llm
@@ -7,54 +9,72 @@ from email_engine.linkedin_parser import parse_linkedin_rejection
 from database.sheet_manager import connect_to_db, update_or_append
 from email_engine.state_manager import get_application_id
 
-def run_sync():
-    print("🚀 Starting RRIS AI Sync (Deep Scan Mode)...")
+def run_sync(deep_scan=False):
+    """
+    RRIS Core Sync Engine: Orchestrates email fetching, filtering, 
+    AI analysis, and database updates.
+    """
+    mode_text = "DEEP SCAN MODE (60 Days)" if deep_scan else "FAST SYNC MODE (3 Days)"
+    print(f"\n🚀 Starting RRIS AI Sync | {mode_text}")
+    print("═" * 50)
     
-    # Initialize Database and Microsoft Connection
+    # 1. Initialize Connections
     sheet = connect_to_db()
+    if not sheet: 
+        print("❌ Database connection failed. Aborting.")
+        return
+        
     token = get_token()
+    days_to_fetch = 60 if deep_scan else 3
     
-    # Fetch 60 days of emails using the paginated fetcher
-    emails = fetch_emails(token) 
+    # 2. Fetch Signals
+    emails = fetch_emails(token, days_back=days_to_fetch) 
+    total_emails = len(emails)
     
-    for mail in emails:
-        # --- DATA EXTRACTION ---
+    if total_emails == 0:
+        print("📭 No new emails found in the specified window.")
+        return
+
+    print(f"📡 Found {total_emails} potential signals. Starting processing...\n")
+
+    # 3. Process with Progress Bar
+    # Use tqdm to track iterations and estimated time remaining (ETA)
+    for mail in tqdm(emails, desc="📥 Syncing Applications", unit="email", leave=True):
         subject = mail.get('subject', '')
         body = mail.get('body', '') 
         sender = mail.get('from', {}).get('emailAddress', {}).get('address', 'Unknown')
         
-        # EXTRACT DATE: Converts '2026-01-28T14:00:00Z' to '2026-01-28'
+        # Standardize date for the tracker
         email_date_raw = mail.get('receivedDateTime', '')
-        email_date = email_date_raw.split('T')[0] if email_date_raw else "2026-02-02"
+        email_date = email_date_raw.split('T')[0] if email_date_raw else "2026-02-16"
 
-        # --- LAYER 1: THE BOUNCER (Hard Filter) ---
-        # Kills noise (SIPs, GitHub, Newsletters) immediately
+        # LAYER 1: Hard Filter (The Bouncer)
         if not is_real_job_email(subject, body, sender):
             continue
 
-        # --- LAYER 2: THE SPECIALIST (LinkedIn Parser) ---
-        # Catches hybrid templates like Alpha Access rejections
+        # LAYER 2: Fast Regex Parsing (LinkedIn Specialist)
         li_hit = parse_linkedin_rejection(subject, body)
         if li_hit:
-            print(f"🎯 LinkedIn Detection: {li_hit['company']}")
-            # Uses Fix 3: Normalized Role Deduplication
             app_id = get_application_id(li_hit["company"], li_hit["role"])
-            # FIX: Properly passing email_date to prevent TypeError
             update_or_append(sheet, li_hit, app_id, email_date)
             continue
 
-        # --- LAYER 3: THE GENIUS (Local Ollama LLM) ---
-        # Handles complex extraction for Turing, HoneyComb, CoinDCX, etc.
-        print(f"💻 AI Analyzing (Full Context): {subject[:40]}...")
+        # LAYER 3: LLM Contextual Analysis (The Genius)
         extracted = analyze_job_email_llm(subject, body, sender)
         
-        if extracted['company'] != "Unknown":
-            # Uses Fix 3: Normalized Role Deduplication
+        # Only commit if AI actually identified a legitimate company
+        if extracted.get('company') and extracted['company'] not in ["Unknown", ""]:
             app_id = get_application_id(extracted['company'], extracted['role'])
-            # FIX: Properly passing email_date to prevent TypeError
             update_or_append(sheet, extracted, app_id, email_date)
+            
+            # 🔥 RATE LIMIT PROTECTION: 
+            # 2s sleep ensures we stay within Groq Free Tier TPM/RPM limits.
+            time.sleep(2) 
 
-    print("✅ Sync Complete. System is now Historically Accurate and Clean.")
+    print(f"\n" + "═" * 50)
+    print(f"✅ Sync Complete. {mode_text} finished successfully.")
 
 if __name__ == "__main__":
-    run_sync()
+    # Check terminal arguments for deep scan flag
+    is_deep = "--deep" in sys.argv
+    run_sync(deep_scan=is_deep)
